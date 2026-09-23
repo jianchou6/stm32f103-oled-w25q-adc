@@ -391,6 +391,7 @@ void OLED_Clear(void)
 // SSD1306 初始化序列（0.96寸 128*64）
 void OLED_Init(void)
 {
+	I2C_Stop();
 	HAL_Delay(100);
 	OLED_Write_Cmd(0xAE); //关闭显示
 	OLED_Write_Cmd(0xD5); //设置时钟分频因子,震荡频率

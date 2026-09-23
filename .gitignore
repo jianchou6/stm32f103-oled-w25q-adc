@@ -1,18 +1,12 @@
-# STM32CubeIDE编译产物
+# STM32 CubeIDE
 Debug/
 Release/
 *.elf
 *.hex
 *.bin
 *.map
-*.siz
-Generated/
-*.su
-.cproject.user
-.project.user
-*.ioc_backup*
-
-#系统垃圾文件
-Thumbs.db
+.su
+.cproject
+.project
+# 系统文件
 .DS_Store
-*.log

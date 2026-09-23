@@ -70,7 +70,8 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 uint8_t  led_flag = 0; //0灭，1亮
 uint32_t tick_200ms = 0;
-uint32_t tick_2000ms = 0;
+uint32_t tick_contrast = 0; //对比度更新计时
+uint32_t tick_oled_refresh = 0; //OLED刷新计时
 
 uint16_t adc_buf[2];
 float volt_pa0=0;
@@ -80,6 +81,7 @@ float adc_volt_last = 0;
 uint16_t adc_val;
 char oled_buf[20];
 uint8_t key_flag=0; //按键消抖标记
+uint8_t key_press_flag = 0; //按键按下标志
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -154,64 +156,76 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  adc_volt_now=adc_buf[0]*3.3f/4095.0f;
-	  volt_light=adc_buf[1]*3.3f/4095.0f;
-	  //根据光敏调节oled背光亮度
-	  uint8_t contrast  = (uint8_t)(0xFF * (1 - (adc_buf[1] / 4095.0f)));
-	  OLED_Write_Cmd(0x81); //对比度设置
-	  OLED_Write_Cmd(contrast);
-	  //周期性保存电压到W25Q中
-	  if(HAL_GetTick() - tick_2000ms >= 2000)
-	      {
-	          tick_2000ms = HAL_GetTick();   // 更新上次执行时间
-	          // ===== 周期任务 =====
-	          //立刻读回来更新内存变量
-	          adc_volt_last=W25Q_ReadVoltage();
-	          //保存当前电压值
-	          W25Q_SaveVoltage(adc_volt_now);
+	    adc_volt_now=adc_buf[0]*3.3f/4095.0f;
+	  	volt_light=adc_buf[1]*3.3f/4095.0f;
 
-	      }
-	  //PB1作为提示灯，如果光照过低，低于0x7F则亮
+	  	// ========== 1. 对比度：200ms更新一次，不要循环一直发 ==========
+	  	if(HAL_GetTick() - tick_contrast >= 200)
+	  	{
+	  		tick_contrast = HAL_GetTick();
+	  		uint8_t contrast  = (uint8_t)(0xFF * (1.0f - (adc_buf[1] / 4095.0f)));
+	  		if(contrast < 0x15) contrast = 0x15; //最低对比度保护
+	  		OLED_Write_Cmd(0x81);
+	  		OLED_Write_Cmd(contrast);
 
+	  		//LED告警逻辑
+	  		if(contrast < 0x7F)
+	  		{
+	  			if(HAL_GetTick() - tick_200ms >= 200)
+	  			{
+	  				tick_200ms = HAL_GetTick();
+	  				led_flag = !led_flag;
+	  				if(led_flag)
+	  					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+	  				else
+	  					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+	  			}
+	  		}
+	  		else
+	  		{
+	  			HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
+	  			led_flag = 0;
+	  			tick_200ms = HAL_GetTick();
+	  		}
+	  	}
 
-	  if(contrast < 0x7F)
-	  {
-	      if(HAL_GetTick() - tick_200ms >= 200)  //每200ms翻转一次
-	      {
-	    	  tick_200ms = HAL_GetTick();
-	          led_flag = !led_flag;
-	          if(led_flag)
-	              HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
-	          else
-	              HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-	      }
-	  }
-	  else
-	  {
-	      //光照正常，强制熄灭LED
-	      HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
-	      led_flag = 0;
-	      tick_200ms = HAL_GetTick();
-	  }
+	  	// ========== 2. 按键检测：消抖，按下保存电压到W25Q ==========
+	  	if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET && key_press_flag == 0)
+	  	{
+	  		HAL_Delay(20); //消抖
+	  		if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET)
+	  		{
+	  			key_press_flag = 1;
+	  			// 按键按下：保存当前电压到Flash，更新last
+	  			W25Q_SaveVoltage(adc_volt_now);
+	  			adc_volt_last = W25Q_ReadVoltage();
+	  		}
+	  	}
+	  	if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET && key_press_flag ==1)
+	  	{
+	  		HAL_Delay(20);
+	  		if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET)
+	  		{
+	  			key_press_flag = 0; //释放按键
+	  		}
+	  	}
 
-	  //PB0按键按下显示保存的电压
-	  if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET)
-	  {
-		  key_flag=1;
-		  sprintf(oled_buf,"Last: %.2fV",adc_volt_last);
-		  OLED_ShowString(0,2, oled_buf);
-	  }
-	  else
-	  {
-		  sprintf(oled_buf,"Now:  %.2fV",adc_volt_now);
-		  OLED_ShowString(0,2, oled_buf);
-		  key_flag = 0;
-	  }
-	  //OLED显示
-	  	sprintf(oled_buf,"LUX:  %.2fV",volt_light);
-	    OLED_ShowString(0,0,oled_buf);
-	  	printf("now=%.2f last=%.2f lux=%.2f contrast=%d\r\n",adc_volt_now,adc_volt_last,volt_light,contrast);
-	  	HAL_Delay(200);
+	  	// ==========3. OLED刷新：500ms刷新一次，非阻塞 ==========
+	  	if(HAL_GetTick() - tick_oled_refresh >= 200)
+	  	{
+	  		tick_oled_refresh = HAL_GetTick();
+	  		//刷新显示
+	  		sprintf(oled_buf,"LUX:  %.2fV",volt_light);
+	  		OLED_ShowString(0,0,oled_buf);
+
+	  		sprintf(oled_buf,"Now:  %.2fV",adc_volt_now);
+	  		OLED_ShowString(0,2, oled_buf);
+
+	  		sprintf(oled_buf,"Last: %.2fV",adc_volt_last);
+	  		OLED_ShowString(0,4, oled_buf);
+
+	  		printf("now=%.2f last=%.2f lux=%.2f\r\n",adc_volt_now,adc_volt_last,volt_light);
+	  	}
   }
     /* USER CODE END WHILE */
 
