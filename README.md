@@ -103,7 +103,7 @@ ADC1，PA0、PA1，单次采样，读取原始 ADC 值用于亮度计算；浮�
 📋 [完整硬件接线文档](./docs/hardware_wiring.md)
 ![硬件接线实物图](./docs/wiring.jpg)
 
-## 🎬运行演示视频
+
 ## 🎬 运行演示视频
 <video src="https://github.com/user-attachments/assets/430a24f7-56bd-4cca-ab4c-9cf04f131836" controls width="600"></video>
 
