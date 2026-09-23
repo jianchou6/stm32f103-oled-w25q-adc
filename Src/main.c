@@ -68,6 +68,10 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+uint8_t  led_flag = 0; //0灭，1亮
+uint32_t tick_200ms = 0;
+uint32_t tick_2000ms = 0;
+
 uint16_t adc_buf[2];
 float volt_pa0=0;
 float volt_light=0;
@@ -87,12 +91,7 @@ static void MX_TIM1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
-//串口重定向
-int fputc(int ch, FILE *f)
-{
-  HAL_UART_Transmit(&huart1, (uint8_t *)&ch,1,10);
-  return ch;
-}
+
 
 /* USER CODE END PFP */
 
@@ -161,12 +160,10 @@ int main(void)
 	  uint8_t contrast  = (uint8_t)(0xFF * (1 - (adc_buf[1] / 4095.0f)));
 	  OLED_Write_Cmd(0x81); //对比度设置
 	  OLED_Write_Cmd(contrast);
-      //定期保存当前电压值到w25Q
-	  uint32_t last_tick = 0;
-	  uint32_t period_ms = 2000;   // 周期 200ms
-	  if(HAL_GetTick() - last_tick >= period_ms)
+	  //周期性保存电压到W25Q中
+	  if(HAL_GetTick() - tick_2000ms >= 2000)
 	      {
-	          last_tick = HAL_GetTick();   // 更新上次执行时间
+	          tick_2000ms = HAL_GetTick();   // 更新上次执行时间
 	          // ===== 周期任务 =====
 	          //立刻读回来更新内存变量
 	          adc_volt_last=W25Q_ReadVoltage();
@@ -175,18 +172,28 @@ int main(void)
 
 	      }
 	  //PB1作为提示灯，如果光照过低，低于0x7F则亮
-	  if(contrast<0x7F)
-	  {
-		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
-		  HAL_Delay(20);
-		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-		  HAL_Delay(20);
 
+
+	  if(contrast < 0x7F)
+	  {
+	      if(HAL_GetTick() - tick_200ms >= 200)  //每200ms翻转一次
+	      {
+	    	  tick_200ms = HAL_GetTick();
+	          led_flag = !led_flag;
+	          if(led_flag)
+	              HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+	          else
+	              HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+	      }
 	  }
 	  else
 	  {
-		  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
+	      //光照正常，强制熄灭LED
+	      HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
+	      led_flag = 0;
+	      tick_200ms = HAL_GetTick();
 	  }
+
 	  //PB0按键按下显示保存的电压
 	  if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET)
 	  {
