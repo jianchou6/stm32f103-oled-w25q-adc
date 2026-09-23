@@ -99,12 +99,21 @@ ADC1，PA0、PA1，单次采样，读取原始 ADC 值用于亮度计算；浮�
 4. ADC1：通道 PA0、PA1，12bit，软件触发
 5. SYS：Debug Serial Wire
 
-## 📝 编译 & 烧录
+## 📎硬件资源
+📋 [完整硬件接线文档](./docs/hardware_wiring.md)
+![硬件接线实物图](./docs/wiring.jpg)
 
-1. 打开 STM32CubeIDE，导入工程
-2. 编译，无报错后使用 ST-Link 下载
-3. 上电：OLED 初始化，读取 W25Q 历史电压，开始实时采集
-4. 按下按键：保存当前电压到 Flash，屏幕更新 last 值
+## 🎬运行演示视频
+## 🎬 运行演示视频
+<video src="https://github.com/user-attachments/assets/430a24f7-56bd-4cca-ab4c-9cf04f131836" controls width="600"></video>
+
+
+## 🔨编译下载
+1. STM32CubeIDE导入本工程，打开`LED_Blink.ioc`确认外设配置
+2. ST‑Link下载程序，上电运行
+3. 串口参数：115200‑8‑N‑1，可使用串口助手查看上报数据
+4. 上电：OLED 初始化，读取 W25Q 历史电压，开始实时采集
+5. 按下按键：保存当前电压到 Flash，屏幕更新 last 值
 
 ## ❗ 常见踩坑记录
 
