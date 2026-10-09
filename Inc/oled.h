@@ -1,5 +1,6 @@
 // oled.h
 #ifndef __OLED_H
+#include "cmsis_os.h"
 #define __OLED_H
 #include "main.h"
 #define SCL_PIN GPIO_PIN_6
@@ -18,13 +19,15 @@ void I2C_Delay_us(uint16_t t);
 uint8_t I2C_WriteByte(uint8_t dat);
 void I2C_Start(void);
 void I2C_Stop(void);
-void OLED_Write_Cmd(uint8_t cmd);
-void OLED_Write_Data(uint8_t data);
+uint8_t OLED_Write_Cmd(uint8_t cmd);
+uint8_t OLED_Write_Data(uint8_t data);
 void OLED_Init(void);
 void OLED_Clear(void);
 void OLED_Set_Pos(uint8_t x, uint8_t y);
 void OLED_ShowChar(uint8_t x, uint8_t y, char ch);
 void OLED_ShowNum(uint8_t x, uint8_t y, uint32_t num, uint8_t len);
 void OLED_ShowString(uint8_t x,uint8_t y,char *str);
+void I2C_ResetBus(void);
+uint8_t OLED_CheckReady(void);
 
 #endif

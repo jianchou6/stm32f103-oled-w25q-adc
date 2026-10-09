@@ -290,6 +290,9 @@ const uint8_t F8X16[]=
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//~ 94
 };
 
+//全局OLED错误计数，静态变量
+static uint8_t oled_comm_fail = 0;
+#define OLED_MAX_FAIL_CNT 5   // 连续失败5次才触发复位，防止抖动反复复位
 
 void I2C_Delay_us(uint16_t t)
 {
@@ -341,26 +344,34 @@ void I2C_Stop(void)
 	I2C_Delay_us(5);
 }
 
-//写数据
-void OLED_Write_Data(uint8_t data)
+//写命令，保持原有时序不变，增加返回值：0成功，1 NACK失败
+uint8_t OLED_Write_Cmd(uint8_t cmd)
 {
+    uint8_t ack1,ack2,ack3;
     I2C_Start();
-    I2C_WriteByte(OLED_ADDR);    //从机地址
-    I2C_WriteByte(0x40);         //0x40：后续字节为【数据】
-    // 重点：字模数据在这里做位反转！！
-    I2C_WriteByte(data );
+    ack1 = I2C_WriteByte(OLED_ADDR);
+    ack2 = I2C_WriteByte(0x00);
+    ack3 = I2C_WriteByte(cmd);
     I2C_Stop();
+    if(ack1 || ack2 || ack3)
+        return 1;
+    return 0;
 }
 
-//写命令，保持原样，不要ReverseBit！！
-void OLED_Write_Cmd(uint8_t cmd)
+//写数据，保持原有时序不变，增加返回值：0成功，1 NACK失败
+uint8_t OLED_Write_Data(uint8_t data)
 {
+    uint8_t ack1,ack2,ack3;
     I2C_Start();
-    I2C_WriteByte(OLED_ADDR);
-    I2C_WriteByte(0x00);        //0x00：后续字节为【命令】
-    I2C_WriteByte(cmd);
+    ack1 = I2C_WriteByte(OLED_ADDR);    //从机地址
+    ack2 = I2C_WriteByte(0x40);         //0x40：后续字节为【数据】
+    ack3 = I2C_WriteByte(data );
     I2C_Stop();
+    if(ack1 || ack2 || ack3)
+        return 1;
+    return 0;
 }
+
 
 
 
@@ -499,4 +510,45 @@ void OLED_ShowString(uint8_t x, uint8_t y, char *str)
     }
 }
 
-
+/**
+ * @brief 软件I2C总线复位，释放SDA，修复SDA被从机拉死问题
+ */
+void I2C_ResetBus(void)
+{
+    uint8_t i;
+    SDA_H;
+    SCL_H;
+    for(i = 0; i < 9; i++)
+    {
+        SCL_L;
+        I2C_Delay_us(5);
+        SCL_H;
+        I2C_Delay_us(5);
+    }
+    // 发送Stop
+    SDA_L;
+    I2C_Delay_us(5);
+    SDA_H;
+}
+uint8_t OLED_CheckReady(void)
+{
+    // 发送OLED开启命令0xAF，检测ACK
+    uint8_t ret = OLED_Write_Cmd(0xAF);
+    if(ret == 0)
+    {
+        oled_comm_fail = 0; // 通信成功，清零失败计数
+        return 0; // OLED正常
+    }
+    else
+    {
+        oled_comm_fail++;
+        if(oled_comm_fail >= OLED_MAX_FAIL_CNT)
+        {
+            // 连续多次失败：复位I2C总线 + 重初始化OLED
+            I2C_ResetBus();
+            OLED_Init();
+            oled_comm_fail = OLED_MAX_FAIL_CNT; // 保持上限，防止无限循环Init
+        }
+        return 1; // OLED通信异常
+    }
+}

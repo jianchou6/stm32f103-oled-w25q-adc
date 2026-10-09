@@ -33,6 +33,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -67,21 +68,56 @@ TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart1;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
+
 uint8_t  led_flag = 0; //0灭，1亮
-uint32_t tick_200ms = 0;
-uint32_t tick_contrast = 0; //对比度更新计时
-uint32_t tick_oled_refresh = 0; //OLED刷新计时
+//ADC采集数据包，通过队列传递
+typedef struct
+{
+    float volt_now;
+    float volt_light;
+}SensorData_t;
+
+//Flash保存请求数据包：按键任务发送，Flash任务执行W25Q擦写
+typedef struct
+{
+    float save_volt;
+}FlashReq_t;
+
+//创建队列
+osMessageQueueId_t sensorQueueHandle;
+const osMessageQueueAttr_t sensorQueue_attributes = {
+  .name = "sensorQueue"
+};
+
+osMessageQueueId_t flashReqQueueHandle;
+const osMessageQueueAttr_t flashReqQueue_attributes = {
+  .name = "flashReqQueue"
+};
+
+osMutexId_t oledMutexHandle;
+const osMutexAttr_t oledMutex_attributes = {
+  .name = "oledMutex"
+};
+
+//保护 adc_volt_last 的互斥锁
+osMutexId_t lastVoltMutexHandle;
+const osMutexAttr_t lastVoltMutex_attributes = {
+  .name = "lastVoltMutex"
+};
+
+
 
 uint16_t adc_buf[2];
-float volt_pa0=0;
-float volt_light=0;
-float adc_volt_now = 0;
 float adc_volt_last = 0;
-uint16_t adc_val;
 char oled_buf[20];
-uint8_t key_flag=0; //按键消抖标记
-uint8_t key_press_flag = 0; //按键按下标志
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -92,9 +128,13 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
+void StartDefaultTask(void *argument);
+
 /* USER CODE BEGIN PFP */
-
-
+void Task_Sensor(void *argument);
+void Task_Display(void *argument);
+void Task_Key(void *argument);
+void Task_FlashStore(void *argument);  //新增：专门做W25Q擦写低优先级任务
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -152,80 +192,61 @@ int main(void)
   OLED_ShowString(0,0,"TEST OLED");
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  oledMutexHandle = osMutexNew(&oledMutex_attributes);
+  lastVoltMutexHandle = osMutexNew(&lastVoltMutex_attributes);
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  //传感器队列增大到十六
+  sensorQueueHandle = osMessageQueueNew(16, sizeof(SensorData_t), &sensorQueue_attributes);
+  //Flash请求队列深度4
+  flashReqQueueHandle = osMessageQueueNew(4, sizeof(FlashReq_t), &flashReqQueue_attributes);
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  //传感器采集任务 栈1024，普通优先级
+  osThreadNew(Task_Sensor, NULL, &(const osThreadAttr_t){.name="TaskSensor",.stack_size=1024,.priority=osPriorityNormal});
+  //OLED显示任务
+  osThreadNew(Task_Display, NULL, &(const osThreadAttr_t){.name="TaskDisp",.stack_size=1024,.priority=osPriorityNormal1});
+  //按键任务
+  osThreadNew(Task_Key, NULL, &(const osThreadAttr_t){.name="TaskKey",.stack_size=512,.priority=osPriorityNormal});
+  //Flash存储任务：低优先级 osPriorityLow，专门处理W25Q耗时擦写
+  osThreadNew(Task_FlashStore, NULL, &(const osThreadAttr_t){.name="TaskFlash",.stack_size=1024,.priority=osPriorityLow});
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	    adc_volt_now=adc_buf[0]*3.3f/4095.0f;
-	  	volt_light=adc_buf[1]*3.3f/4095.0f;
 
-	  	// ========== 1. 对比度：200ms更新一次，不要循环一直发 ==========
-	  	if(HAL_GetTick() - tick_contrast >= 200)
-	  	{
-	  		tick_contrast = HAL_GetTick();
-	  		uint8_t contrast  = (uint8_t)(0xFF * (1.0f - (adc_buf[1] / 4095.0f)));
-	  		if(contrast < 0x15) contrast = 0x15; //最低对比度保护
-	  		OLED_Write_Cmd(0x81);
-	  		OLED_Write_Cmd(contrast);
-
-	  		//LED告警逻辑
-	  		if(contrast < 0x7F)
-	  		{
-	  			if(HAL_GetTick() - tick_200ms >= 200)
-	  			{
-	  				tick_200ms = HAL_GetTick();
-	  				led_flag = !led_flag;
-	  				if(led_flag)
-	  					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
-	  				else
-	  					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-	  			}
-	  		}
-	  		else
-	  		{
-	  			HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
-	  			led_flag = 0;
-	  			tick_200ms = HAL_GetTick();
-	  		}
-	  	}
-
-	  	// ========== 2. 按键检测：消抖，按下保存电压到W25Q ==========
-	  	if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET && key_press_flag == 0)
-	  	{
-	  		HAL_Delay(20); //消抖
-	  		if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET)
-	  		{
-	  			key_press_flag = 1;
-	  			// 按键按下：保存当前电压到Flash，更新last
-	  			W25Q_SaveVoltage(adc_volt_now);
-	  			adc_volt_last = W25Q_ReadVoltage();
-	  		}
-	  	}
-	  	if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET && key_press_flag ==1)
-	  	{
-	  		HAL_Delay(20);
-	  		if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET)
-	  		{
-	  			key_press_flag = 0; //释放按键
-	  		}
-	  	}
-
-	  	// ==========3. OLED刷新：500ms刷新一次，非阻塞 ==========
-	  	if(HAL_GetTick() - tick_oled_refresh >= 200)
-	  	{
-	  		tick_oled_refresh = HAL_GetTick();
-	  		//刷新显示
-	  		sprintf(oled_buf,"LUX:  %.2fV",volt_light);
-	  		OLED_ShowString(0,0,oled_buf);
-
-	  		sprintf(oled_buf,"Now:  %.2fV",adc_volt_now);
-	  		OLED_ShowString(0,2, oled_buf);
-
-	  		sprintf(oled_buf,"Last: %.2fV",adc_volt_last);
-	  		OLED_ShowString(0,4, oled_buf);
-
-	  		printf("now=%.2f last=%.2f lux=%.2f\r\n",adc_volt_now,adc_volt_last,volt_light);
-	  	}
   }
     /* USER CODE END WHILE */
 
@@ -482,7 +503,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
@@ -554,9 +575,193 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+ * 传感器采集任务：200ms周期，读取ADC，投递队列
+ */
+void Task_Sensor(void *argument)
+{
+    SensorData_t data;
+    uint16_t local_adc[2];
+    for(;;)
+    {
+    	//拷贝DMA缓冲区，防止读取过程DMA改写
+    	local_adc[0] = adc_buf[0];
+    	local_adc[1] = adc_buf[1];
+
+        data.volt_now  = local_adc[0] * 3.3f / 4095.0f;
+        data.volt_light= local_adc[1] * 3.3f / 4095.0f;
+
+        //投递数据到队列
+        osMessageQueuePut(sensorQueueHandle, &data, 0U, 0U);
+
+        osDelay(200);
+    }
+}
+/**
+ * OLED显示任务：阻塞等待队列数据，刷新屏幕、对比度、LED告警
+ * tick改为任务局部变量，不再static
+ */
+void Task_Display(void *argument)
+{
+	uint32_t tick=0;
+    SensorData_t rcvData;
+    for(;;)
+    {
+        //等待队列数据，阻塞等待
+        if(osMessageQueueGet(sensorQueueHandle, &rcvData, NULL, osWaitForever)==osOK)
+        {
+        	//=====新增OLED通信检测=====
+        	if(OLED_CheckReady() != 0)
+        	{
+        	//OLED通信故障，跳过本次刷新，不操作I2C
+        	continue;
+        	}
+
+            //拿OLED互斥锁
+            osMutexAcquire(oledMutexHandle, osWaitForever);
+
+            //自适应对比度
+            uint8_t contrast  = (uint8_t)(0xFF * (1.0f - (rcvData.volt_light / 3.3f)));
+            if(contrast < 0x15) contrast = 0x15;
+            OLED_Write_Cmd(0x81);
+            OLED_Write_Cmd(contrast);
+
+            sprintf(oled_buf,"LUX:  %.2fV",rcvData.volt_light);
+            OLED_ShowString(0,0,oled_buf);
+
+            sprintf(oled_buf,"Now:  %.2fV",rcvData.volt_now);
+            OLED_ShowString(0,2, oled_buf);
+            printf("now=%.2f last=%.2f lux=%.2f\r\n",rcvData.volt_now,adc_volt_last,rcvData.volt_light);
+            // 读取 adc_volt_last（加锁）
+            osMutexAcquire(lastVoltMutexHandle, osWaitForever);
+            float last = adc_volt_last;
+            osMutexRelease(lastVoltMutexHandle);
+            sprintf(oled_buf, "Last: %.2fV", last);
+            OLED_ShowString(0, 4, oled_buf);
+
+            //光照告警LED闪烁
+            if(contrast < 0x7F)
+            {
+                if(osKernelGetTickCount()-tick >= 200)
+                {
+                    tick = osKernelGetTickCount();
+                    led_flag = !led_flag;
+                    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, led_flag?GPIO_PIN_SET:GPIO_PIN_RESET);
+                }
+            }
+            else
+            {
+                HAL_GPIO_WritePin(GPIOB,GPIO_PIN_1,GPIO_PIN_RESET);
+                led_flag = 0;
+                tick = osKernelGetTickCount(); // ✅熄灭时重置计时
+            }
+
+            //释放互斥锁
+            osMutexRelease(oledMutexHandle);
+        }
+    }
+}
+
+/**
+ * 按键检测任务：只做按键检测，发送Flash存储请求，**不执行耗时W25Q操作
+ */
+void Task_Key(void *argument)
+{
+    uint8_t key_press_flag = 0;
+    FlashReq_t req;
+    uint16_t local_adc_key; // ✅增加局部快照变量
+    for(;;)
+    {
+        if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET && key_press_flag == 0)
+        {
+            osDelay(20);
+            if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_RESET)
+            {
+                key_press_flag = 1;
+                //填充要保存的电压，发送请求给Flash任务
+                local_adc_key = adc_buf[0];                 // ✅DMA缓冲区快照拷贝
+                req.save_volt  = local_adc_key * 3.3f / 4095.0f;
+                osMessageQueuePut(flashReqQueueHandle, &req,0U,0U);
+            }
+        }
+        if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET && key_press_flag ==1)
+        {
+            osDelay(20);
+            if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_0)==GPIO_PIN_SET)
+            {
+                key_press_flag = 0;
+            }
+        }
+        osDelay(10);
+    }
+}
+/**
+ * 【新增低优先级Flash任务】专门处理W25Q擦除、写入耗时操作
+ * 优先级osPriorityLow，不会抢占传感器、显示、按键等高响应任务
+ */
+void Task_FlashStore(void *argument)
+{
+    FlashReq_t req;
+    float read_back;
+    for(;;)
+    {
+        //阻塞等待保存请求
+        if(osMessageQueueGet(flashReqQueueHandle,&req,NULL,osWaitForever) == osOK)
+        {
+            //执行耗时W25Q扇区擦除+写入
+            W25Q_SaveVoltage(req.save_volt);
+            read_back = W25Q_ReadVoltage();
+
+            // 更新全局变量
+            osMutexAcquire(lastVoltMutexHandle, osWaitForever);
+            adc_volt_last = read_back;
+            osMutexRelease(lastVoltMutexHandle);
 
 
+        }
+    }
+}
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM2 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM2)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
